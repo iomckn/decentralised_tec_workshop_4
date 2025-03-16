@@ -1,48 +1,55 @@
+// regestry.ts
 import bodyParser from "body-parser";
-import express from "express";
+import express, { Request, Response } from "express";
 import { REGISTRY_PORT } from "../config";
 
-// Store registered nodes in memory
-const registeredNodes: { nodeId: number; port: number }[] = [];
+export type Node = { nodeId: number; pubKey: string };
 
-export async function registry() {
+export type GetNodeRegistryBody = {
+  nodes: Node[];
+};
+
+
+export type RegisterNodeBody = {
+  nodeId: number;
+  pubKey: string;
+};
+
+
+
+export async function launchRegistry() {
   const _registry = express();
   _registry.use(express.json());
   _registry.use(bodyParser.json());
+  let nodes: Node[] = [];
 
-  // Status route
   _registry.get("/status", (req, res) => {
     res.send("live");
   });
+  _registry.get("/getNodeRegistry", (req: Request, res: Response) => {
+    const payload: GetNodeRegistryBody = {
+      nodes: nodes
+    };
 
-  // POST route to register a node
+    res.json(payload);  
+  }); 
+
   _registry.post("/registerNode", (req, res) => {
-    const { nodeId, port } = req.body;
+    const { nodeId, pubKey }: RegisterNodeBody = req.body;
 
-    if (typeof nodeId !== "number" || typeof port !== "number") {
-      return res.status(400).json({ error: "Invalid nodeId or port." });
+    const nodeExists = nodes.find(node => node.nodeId === nodeId);
+    if (nodeExists) {
+      return res.status(400).json({ message: "Node already registered." });
     }
 
-    // Check if the node is already registered
-    const existingNode = registeredNodes.find((node) => node.nodeId === nodeId);
-    if (existingNode) {
-      return res.status(409).json({ error: "Node already registered." });
-    }
-
-    // Register the new node
-    registeredNodes.push({ nodeId, port });
-    console.log(`Node ${nodeId} registered on port ${port}`);
-    res.json({ message: "Node registered successfully." });
+    nodes.push({ nodeId, pubKey });
+    return res.status(201).json({ message: "Node registered successfully." });
   });
-
-  // Optional: GET route to list all registered nodes
-  _registry.get("/getRegisteredNodes", (req, res) => {
-    res.json({ registeredNodes });
-  });
-
+  
   const server = _registry.listen(REGISTRY_PORT, () => {
     console.log(`Registry is listening on port ${REGISTRY_PORT}`);
   });
 
   return server;
 }
+
