@@ -1,54 +1,85 @@
 import bodyParser from "body-parser";
 import express from "express";
-import { BASE_ONION_ROUTER_PORT } from "../config";
+import { BASE_ONION_ROUTER_PORT, REGISTRY_PORT } from "../config";
+import { Node } from "../registry/registry";
+import { generateRsaKeyPair, exportPubKey, exportPrvKey, rsaDecrypt, symDecrypt, importPrvKey } from "../crypto";
 
-// Variables to store the last received messages and destination
-let lastReceivedEncryptedMessage: string | null = null;
-let lastReceivedDecryptedMessage: string | null = null;
-let lastMessageDestination: number | null = null;
 
 export async function simpleOnionRouter(nodeId: number) {
   const onionRouter = express();
   onionRouter.use(express.json());
   onionRouter.use(bodyParser.json());
 
-  // Status route
+  var lastReceivedEncryptedMessage: string | null = null;
+  var lastReceivedDecryptedMessage: string | null = null;
+  var lastMessageDestination: number | null = null;
+  var lastMessageSource: number | null = null;
+
+  const keyPair = await generateRsaKeyPair();
+  const publicKey = await exportPubKey(keyPair.publicKey);
+  const privateKey = await exportPrvKey(keyPair.privateKey);
+
+  var node: Node = { nodeId: nodeId, pubKey: publicKey };
+
   onionRouter.get("/status", (req, res) => {
     res.send("live");
   });
 
-  // Route to get the last received encrypted message
   onionRouter.get("/getLastReceivedEncryptedMessage", (req, res) => {
     res.json({ result: lastReceivedEncryptedMessage });
   });
 
-  // Route to get the last received decrypted message
   onionRouter.get("/getLastReceivedDecryptedMessage", (req, res) => {
     res.json({ result: lastReceivedDecryptedMessage });
   });
 
-  // Route to get the last message's destination
   onionRouter.get("/getLastMessageDestination", (req, res) => {
     res.json({ result: lastMessageDestination });
   });
 
-  // Example route to simulate receiving a message (for testing purposes)
-  onionRouter.post("/receiveMessage", (req, res) => {
-    const { encryptedMessage, decryptedMessage, destination } = req.body;
+  onionRouter.get("/getLastMessageSource", (req, res) => {
+    res.json({ result: lastMessageSource });
+  });
 
-    // Update the last received message and destination
-    lastReceivedEncryptedMessage = encryptedMessage || null;
-    lastReceivedDecryptedMessage = decryptedMessage || null;
-    lastMessageDestination = destination || null;
+  const response = await fetch(`http://localhost:${REGISTRY_PORT}/registerNode`, {
+    method: "POST",
+    body: JSON.stringify({ nodeId: nodeId, pubKey: publicKey }),
+    headers: { "Content-Type": "application/json" },
+  });
+  console.log(await response.json());
 
-    res.json({ message: "Message received and processed" });
+  onionRouter.get("/getPrivateKey", (req, res) => {
+    res.json({ result: privateKey });
+  });
+
+  // Route to handle incoming messages
+  onionRouter.post("/message", async (req, res) => {
+    const layer = req.body.message;
+
+    const encryptedSymKey = layer.slice(0, 344);
+    const symKey = privateKey ? await rsaDecrypt(encryptedSymKey, await importPrvKey(privateKey)) : null;
+    const encryptedMessage = layer.slice(344);
+    const message = symKey ? await symDecrypt(symKey, encryptedMessage) : null;
+    lastMessageDestination = message ? parseInt(message.slice(0, 10), 10) : null;
+    lastReceivedEncryptedMessage = layer;
+    lastMessageSource = nodeId;
+    lastReceivedDecryptedMessage = message ? message.slice(10) : null;
+    
+    if (lastMessageDestination) {
+      await fetch(`http://localhost:${lastMessageDestination}/message`, {
+        method: "POST",
+        body: JSON.stringify({ message: lastReceivedDecryptedMessage }),
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    res.send("success");
   });
 
   const server = onionRouter.listen(BASE_ONION_ROUTER_PORT + nodeId, () => {
     console.log(
-        `Onion router ${nodeId} is listening on port ${
-            BASE_ONION_ROUTER_PORT + nodeId
-        }`
+      `Onion router ${nodeId} is listening on port ${
+        BASE_ONION_ROUTER_PORT + nodeId
+      }`
     );
   });
 
